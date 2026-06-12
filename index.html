@@ -13,9 +13,9 @@
     --text:#e7eefc; --dim:#8093b0; --panel:rgba(10,17,32,.92);
   }
   *{margin:0;padding:0;box-sizing:border-box}
-  html,body{height:100%;background:radial-gradient(ellipse at 50% 0%,var(--bg2),var(--bg) 70%);color:var(--text);font-family:'Space Grotesk',sans-serif;overflow:hidden}
+  html,body{height:100%;background:radial-gradient(ellipse at 50% 0%,var(--bg2),var(--bg) 70%);color:var(--text);font-family:'Space Grotesk',sans-serif;overflow:hidden;overscroll-behavior:none;position:fixed;width:100%;-webkit-user-select:none;user-select:none}
   #stage{position:fixed;inset:0}
-  canvas{position:absolute;inset:0;display:none}
+  canvas{position:absolute;inset:0;display:none;touch-action:none}
   canvas.active{display:block}
   #treeWrap{position:absolute;inset:0;overflow:auto;display:none;padding:90px 24px 40px}
   #treeWrap.active{display:block}
@@ -229,7 +229,7 @@ const root = byId['joerger'];
 const cv=document.getElementById('c'), ctx=cv.getContext('2d');
 const tip=document.getElementById('tip');
 const treeWrap=document.getElementById('treeWrap');
-let W,H,DPR, mode='neural';
+let W=window.innerWidth, H=window.innerHeight, DPR, mode='neural';
 
 function resize(){
   DPR=Math.min(window.devicePixelRatio||1,2);
@@ -288,7 +288,7 @@ function drawNeural(){
     ctx.fillStyle=a.pulse>0?'rgba(255,241,77,0.9)':'rgba(120,200,255,0.5)';
     ctx.beginPath();ctx.arc(px,py,glow,0,7);ctx.fill();});
   NODES.forEach(n=>{ if(!nodeVisible(n))return;
-    if(!Number.isFinite(n.x)||!Number.isFinite(n.y))return;
+    if(!Number.isFinite(n.x)||!Number.isFinite(n.y)){n.x=W/2+(Math.random()-0.5)*100;n.y=H/2+(Math.random()-0.5)*100;n.vx=0;n.vy=0;}
     const breathe=1+Math.sin(t*1.6+n.x*0.01)*0.06+n.pulse*0.5,r=n.r*breathe;
     const g=ctx.createRadialGradient(n.x,n.y,0,n.x,n.y,r*3.2);
     g.addColorStop(0,n.color+'55');g.addColorStop(1,n.color+'00');
@@ -433,30 +433,91 @@ function pick(mx,my){
     if(d<n.r+8&&d<bd){bd=d;best=n;}});
   return best;
 }
+// --- multi-pointer touch + mouse interaction ---
+const pointers=new Map();      // id -> {x,y}
+let pinchDist=0, pinchMid=null;
+let downPos=null, moved=false, downNode=null;
+
+function avgPointers(){
+  let sx=0,sy=0,n=0; pointers.forEach(p=>{sx+=p.x;sy+=p.y;n++;}); return {x:sx/n,y:sy/n};
+}
+
 cv.addEventListener('pointerdown',e=>{
-  const n=pick(e.clientX,e.clientY);
-  if(n&&mode==='neural'){dragNode=n;n.pulse=1;cv.setPointerCapture(e.pointerId);}
-  else{panning=true;}
-  last={x:e.clientX,y:e.clientY};
-});
+  if(cv.setPointerCapture){try{cv.setPointerCapture(e.pointerId);}catch(_){}}
+  pointers.set(e.pointerId,{x:e.clientX,y:e.clientY});
+  downPos={x:e.clientX,y:e.clientY}; moved=false;
+  if(pointers.size===1){
+    const n=pick(e.clientX,e.clientY);
+    downNode=n;
+    if(n&&mode==='neural'){dragNode=n;n.pulse=1;}
+    else{panning=true;}
+    last={x:e.clientX,y:e.clientY};
+  } else if(pointers.size===2){
+    // entering pinch: cancel node drag/pan
+    dragNode=null; panning=false;
+    const pts=[...pointers.values()];
+    pinchDist=Math.hypot(pts[0].x-pts[1].x, pts[0].y-pts[1].y);
+    pinchMid=avgPointers();
+  }
+},{passive:false});
+
 cv.addEventListener('pointermove',e=>{
-  if(dragNode&&mode==='neural'){const w=toWorld(e.clientX,e.clientY);dragNode.x=w.x;dragNode.y=w.y;dragNode.vx=0;dragNode.vy=0;}
-  else if(panning){view.x+=e.clientX-last.x;view.y+=e.clientY-last.y;last={x:e.clientX,y:e.clientY};}
-  else{const n=pick(e.clientX,e.clientY);
+  if(!pointers.has(e.pointerId)){
+    // hover (mouse only) for tooltip
+    const n=pick(e.clientX,e.clientY);
     if(n){cv.style.cursor='pointer';showTip(n,e.clientX,e.clientY);}
-    else{cv.style.cursor='grab';hideTip();}}
-});
-window.addEventListener('pointerup',()=>{dragNode=null;panning=false;});
+    else{cv.style.cursor='grab';hideTip();}
+    return;
+  }
+  pointers.set(e.pointerId,{x:e.clientX,y:e.clientY});
+  if(downPos && Math.hypot(e.clientX-downPos.x,e.clientY-downPos.y)>6) moved=true;
+
+  if(pointers.size>=2){
+    // pinch zoom around the midpoint
+    const pts=[...pointers.values()];
+    const dist=Math.hypot(pts[0].x-pts[1].x, pts[0].y-pts[1].y);
+    const mid=avgPointers();
+    if(pinchDist>0){
+      const f=dist/pinchDist;
+      const wx=(mid.x-view.x)/view.k, wy=(mid.y-view.y)/view.k;
+      view.k=Math.max(0.3,Math.min(4,view.k*f));
+      view.x=mid.x-wx*view.k; view.y=mid.y-wy*view.k;
+      // also pan with the midpoint movement
+      if(pinchMid){view.x+=mid.x-pinchMid.x; view.y+=mid.y-pinchMid.y;}
+    }
+    pinchDist=dist; pinchMid=mid;
+    return;
+  }
+
+  // single pointer: drag node (neural) or pan
+  if(dragNode&&mode==='neural'){
+    const w=toWorld(e.clientX,e.clientY);dragNode.x=w.x;dragNode.y=w.y;dragNode.vx=0;dragNode.vy=0;
+  } else if(panning){
+    view.x+=e.clientX-last.x;view.y+=e.clientY-last.y;last={x:e.clientX,y:e.clientY};
+  }
+},{passive:false});
+
+function endPointer(e){
+  // tap-to-open: only if it was a single pointer that barely moved
+  if(pointers.size===1 && !moved && downNode){
+    const n=pick(e.clientX,e.clientY);
+    if(n===downNode && n){ n.pulse=1; window.open(linkedinURL(n),'_blank','noopener'); }
+  }
+  pointers.delete(e.pointerId);
+  if(pointers.size<2){pinchDist=0;pinchMid=null;}
+  if(pointers.size===0){dragNode=null;panning=false;downNode=null;}
+}
+cv.addEventListener('pointerup',endPointer);
+cv.addEventListener('pointercancel',e=>{pointers.delete(e.pointerId);if(pointers.size<2){pinchDist=0;pinchMid=null;}if(pointers.size===0){dragNode=null;panning=false;downNode=null;}});
+
+// mouse wheel zoom (desktop)
 cv.addEventListener('wheel',e=>{
   e.preventDefault();const f=e.deltaY<0?1.1:0.9,mx=e.clientX,my=e.clientY;
   const wx=(mx-view.x)/view.k,wy=(my-view.y)/view.k;
-  view.k=Math.max(0.3,Math.min(3,view.k*f));view.x=mx-wx*view.k;view.y=my-wy*view.k;
+  view.k=Math.max(0.3,Math.min(4,view.k*f));view.x=mx-wx*view.k;view.y=my-wy*view.k;
 },{passive:false});
-cv.addEventListener('click',e=>{
-  if(panning&&(Math.abs(e.movementX)>2))return;
-  const n=pick(e.clientX,e.clientY);if(!n)return;
-  n.pulse=1;window.open(linkedinURL(n),'_blank','noopener');
-});
+
+// double-click / double-tap pulses branch (neural)
 cv.addEventListener('dblclick',e=>{
   const n=pick(e.clientX,e.clientY);if(!n)return;
   const q=[n];while(q.length){const c=q.shift();c.pulse=1;c.children.forEach(k=>q.push(k));}
