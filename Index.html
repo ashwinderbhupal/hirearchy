@@ -1,0 +1,468 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>SC Field-Fix — Org Map</title>
+<style>
+  @import url('https://fonts.googleapis.com/css2?family=Space+Grotesk:wght@400;500;600;700&family=JetBrains+Mono:wght@400;500&display=swap');
+  :root{
+    --bg:#05080f; --bg2:#0a1120;
+    --director:#ff5e8a; --site:#ffc94d; --srops:#e8edf5; --ops:#9fb3c8;
+    --area:#ff4d4d; --intern:#ff9d9d; --orange:#ff9b3d; --learn:#4fd17a; --me:#fff14d;
+    --text:#e7eefc; --dim:#8093b0; --panel:rgba(10,17,32,.92);
+  }
+  *{margin:0;padding:0;box-sizing:border-box}
+  html,body{height:100%;background:radial-gradient(ellipse at 50% 0%,var(--bg2),var(--bg) 70%);color:var(--text);font-family:'Space Grotesk',sans-serif;overflow:hidden}
+  #stage{position:fixed;inset:0}
+  canvas{position:absolute;inset:0;display:none}
+  canvas.active{display:block}
+  #treeWrap{position:absolute;inset:0;overflow:auto;display:none;padding:90px 24px 40px}
+  #treeWrap.active{display:block}
+
+  .hud{position:fixed;top:16px;left:18px;z-index:10;pointer-events:none}
+  .hud h1{font-size:15px;font-weight:700;letter-spacing:.14em;text-transform:uppercase}
+  .hud p{font-family:'JetBrains Mono',monospace;font-size:11px;color:var(--dim);margin-top:4px}
+
+  /* control bar */
+  .bar{position:fixed;top:14px;left:50%;transform:translateX(-50%);z-index:30;display:flex;gap:8px;
+       background:var(--panel);border:1px solid rgba(110,168,255,.2);border-radius:12px;padding:6px;backdrop-filter:blur(8px)}
+  .bar button{font-family:'JetBrains Mono',monospace;font-size:12px;color:var(--dim);background:transparent;border:0;
+       padding:7px 13px;border-radius:8px;cursor:pointer;letter-spacing:.04em;transition:.15s}
+  .bar button:hover{color:var(--text)}
+  .bar button.on{background:rgba(110,168,255,.18);color:#fff}
+
+  /* category filter chips */
+  .filters{position:fixed;bottom:16px;left:50%;transform:translateX(-50%);z-index:30;display:flex;flex-wrap:wrap;gap:6px;justify-content:center;
+       max-width:94vw;background:var(--panel);border:1px solid rgba(110,168,255,.2);border-radius:12px;padding:8px;backdrop-filter:blur(8px)}
+  .chip{font-family:'JetBrains Mono',monospace;font-size:10.5px;color:var(--text);background:rgba(255,255,255,.04);
+       border:1px solid transparent;padding:5px 10px;border-radius:20px;cursor:pointer;display:inline-flex;align-items:center;gap:6px;transition:.15s;user-select:none}
+  .chip .dot{width:9px;height:9px;border-radius:50%;box-shadow:0 0 8px currentColor}
+  .chip.off{opacity:.32;text-decoration:line-through}
+  .chip:hover{border-color:rgba(110,168,255,.4)}
+
+  .tip{position:fixed;z-index:40;pointer-events:none;background:rgba(8,14,26,.94);border:1px solid rgba(110,168,255,.3);
+       border-radius:10px;padding:9px 13px;font-size:13px;opacity:0;transition:opacity .12s;backdrop-filter:blur(8px);max-width:250px}
+  .tip .nm{font-weight:600}
+  .tip .rl{font-family:'JetBrains Mono',monospace;font-size:10.5px;color:var(--dim);margin-top:2px}
+  .tip .rp{font-size:10.5px;color:var(--area);margin-top:3px}
+  .tip .li{font-size:10px;color:#4a9eff;margin-top:4px;font-family:'JetBrains Mono',monospace}
+
+  .hint{position:fixed;bottom:64px;left:50%;transform:translateX(-50%);z-index:10;font-family:'JetBrains Mono',monospace;
+        font-size:10px;color:var(--dim);text-align:center;pointer-events:none;opacity:.8}
+
+  /* tree mode */
+  .tnode{display:flex;align-items:center;gap:8px;padding:4px 0;cursor:pointer}
+  .tnode .tdot{width:12px;height:12px;border-radius:50%;flex:none;box-shadow:0 0 8px currentColor}
+  .tnode .tname{font-size:13.5px;font-weight:600}
+  .tnode .trole{font-family:'JetBrains Mono',monospace;font-size:10.5px;color:var(--dim);margin-left:4px}
+  .tnode .tcount{font-family:'JetBrains Mono',monospace;font-size:10px;color:#6ea8ff;margin-left:6px}
+  .tnode .tcaret{width:14px;font-size:11px;color:var(--dim);flex:none;text-align:center}
+  .tnode.linked .tname{border-bottom:1px dashed rgba(74,158,255,.6)}
+  .tchildren{margin-left:20px;border-left:1px solid rgba(110,168,255,.14);padding-left:14px}
+  .tchildren.collapsed{display:none}
+</style>
+</head>
+<body>
+<div id="stage">
+  <canvas id="c" class="active"></canvas>
+  <div id="treeWrap"></div>
+</div>
+
+<div class="hud"><h1>SC Field-Fix</h1><p id="modeLabel">org neural map</p></div>
+
+<div class="bar" id="bar">
+  <button data-mode="neural" class="on">Neural</button>
+  <button data-mode="tree">Tree</button>
+  <button data-mode="radial">Radial</button>
+</div>
+
+<div class="filters" id="filters"></div>
+<div class="hint" id="hint">click a node → Google · double-click → pulse branch</div>
+<div class="tip" id="tip"></div>
+
+<script>
+const NODES = [
+  {id:'joerger', name:'Nicholas Joerger', role:'Director, Operations', type:'director'},
+  {id:'mucaj', name:'Elvis Mucaj', role:'Site Leader', type:'site', p:'joerger', li:'https://www.linkedin.com/in/elvismucaj/'},
+
+  {id:'ash', name:'Ashwinder Bhupal', role:'Area Manager', type:'me', p:'mucaj', li:'https://www.linkedin.com/in/ashwinderbhupal/'},
+  {id:'boguski', name:'James Boguski', role:'Operations Manager', type:'ops', p:'mucaj', li:'https://www.linkedin.com/in/james-boguski-878a771a/'},
+
+  {id:'houda', name:'Houda Zerkti', role:'Operations Manager', type:'ops', p:'mucaj', li:'https://www.linkedin.com/in/houda-zerkti-4a9979ab/'},
+  {id:'clossaint', name:'Ezarack Clossaint', role:'Area Manager', type:'area', p:'houda', li:'https://www.linkedin.com/in/ezarack-clossaint-068584293/'},
+  {id:'maldonado', name:'Jaedin Maldonado', role:'Area Manager', type:'area', p:'houda', li:'https://www.linkedin.com/in/jaedin-maldonado-374611220/'},
+  {id:'joycollins', name:'Joy Collins', role:'Area Manager', type:'area', p:'houda'},
+  {id:'gandhi', name:'Kushan Gandhi', role:'Area Manager', type:'area', p:'houda', li:'https://www.linkedin.com/in/kushangandhi15/'},
+  {id:'san', name:'Kwai Swan (Daniel) San', role:'Area Manager', type:'area', p:'houda', li:'https://www.linkedin.com/in/ksdanielsan/'},
+  {id:'adesina', name:'Samuel Adesina', role:'Area Manager', type:'area', p:'houda', li:'https://www.linkedin.com/in/samuel-adesina/'},
+
+  {id:'pizzola', name:'Nick Pizzola', role:'Learning Area Manager', type:'learn', p:'mucaj', li:'https://www.linkedin.com/in/nicholas-pizzola/'},
+  {id:'cohoon', name:'Edward Cohoon', role:'Learning Trainer', type:'learn', p:'pizzola'},
+  {id:'hassan', name:'Fathima Shehla Hassan', role:'Learning Trainer', type:'learn', p:'pizzola'},
+  {id:'pepitone', name:'Joseph Pepitone', role:'Learning Trainer', type:'learn', p:'pizzola', li:'https://www.linkedin.com/in/joseph-pepitone-bb22b22/'},
+  {id:'lsmith', name:'Louis Smith', role:'Learning Trainer', type:'learn', p:'pizzola'},
+  {id:'marotte', name:'Rocky Marotte', role:'Learning Trainer', type:'learn', p:'pizzola'},
+
+  {id:'nikita', name:'Nikita Mondkar', role:'Pathways Operations Manager', type:'ops', p:'mucaj', li:'https://www.linkedin.com/in/nikitamondkar/'},
+  {id:'tapia', name:'Brian Tapia', role:'Area Manager', type:'area', p:'nikita'},
+  {id:'lukose', name:'Darrel Lukose', role:'Area Manager', type:'area', p:'nikita'},
+  {id:'ojeda', name:'Juliana Ojeda', role:'Area Manager', type:'area', p:'nikita'},
+  {id:'tadros', name:'Sara Tadros', role:'Area Manager', type:'area', p:'nikita'},
+
+  {id:'oksana', name:'Oksana Marzoeva', role:'Sr. Operations Manager', type:'srops', p:'mucaj', li:'https://www.linkedin.com/in/oksana-marzoeva/'},
+  {id:'carmen', name:'Carmen Anthony', role:'Operations Manager', type:'ops', p:'oksana', li:'https://www.linkedin.com/in/carmen-anthony-94891b7/'},
+  {id:'ryka', name:'Ryka Rock', role:'Process Assistant', type:'pa', p:'carmen'},
+  {id:'tashaun', name:'Tashaun Brown', role:'Area Manager', type:'area', p:'carmen', li:'https://www.linkedin.com/in/tashaun-brown-6b2221298/'},
+  {id:'gary', name:'Gary Wysocki', role:'Operations Manager', type:'ops', p:'oksana', li:'https://www.linkedin.com/in/gary-wysocki-478a8132/'},
+  {id:'cwood', name:'Connor Wood', role:'Area Manager', type:'area', p:'gary', li:'https://www.linkedin.com/in/connor-wood-176802250/'},
+  {id:'bagsic', name:'Daniel Bagsic', role:'Area Manager', type:'area', p:'gary', li:'https://www.linkedin.com/in/daniel-bagsic/'},
+  {id:'kwright', name:'Kayla Wright', role:'Area Manager', type:'area', p:'gary', li:'https://www.linkedin.com/in/kayla-wright-7514b0159/'},
+  {id:'gyasi', name:'Kofi Gyasi', role:'Area Manager', type:'area', p:'gary', li:'https://www.linkedin.com/in/kofie-gyasi-mba-431b36257/'},
+  {id:'khymiak', name:'Solomia Khymiak', role:'Area Manager', type:'area', p:'gary', li:'https://www.linkedin.com/in/solomia-khymiak-a3b997221/'},
+  {id:'orleski', name:'Jeffrey Orleski', role:'Operations Manager', type:'ops', p:'oksana', li:'https://www.linkedin.com/in/jeff-orleski-69404ab9/'},
+  {id:'jigar', name:'Jigar Patel', role:'Area Manager', type:'area', p:'orleski'},
+  {id:'jmoore', name:'Jim Moore', role:'Area Manager', type:'area', p:'orleski'},
+  {id:'elhoseny', name:'Mohamed Elhoseny', role:'Area Manager', type:'area', p:'orleski'},
+  {id:'villaverde', name:'Ray Villaverde', role:'Area Manager', type:'area', p:'orleski'},
+  {id:'kozlowski', name:'Steven Kozlowski', role:'Operations Manager', type:'ops', p:'oksana'},
+  {id:'ace', name:'Ace', role:'Area Manager', type:'area', p:'kozlowski'},
+  {id:'jackman', name:'Hunter Jackman', role:'Area Manager', type:'area', p:'kozlowski'},
+  {id:'krupa', name:'Krupa Patel', role:'Area Manager', type:'area', p:'kozlowski', li:'https://www.linkedin.com/in/krupa-patel2503/'},
+  {id:'madhavi', name:'Madhavi Naraharisetty', role:'Area Manager', type:'area', p:'kozlowski', li:'https://www.linkedin.com/in/madhavi-naraharisetty/'},
+  {id:'farkas', name:'Zach Farkas', role:'Pathways Ops Mgr Intern', type:'intern', p:'oksana', li:'https://www.linkedin.com/in/zach-farkas/'},
+
+  {id:'seyelle', name:'Seyelle Collier', role:'Operations Manager', type:'ops', p:'mucaj', li:'https://www.linkedin.com/in/seyellecollier/'},
+  {id:'ehernandez', name:'Edwin Hernandez', role:'Area Manager', type:'area', p:'seyelle', li:'https://www.linkedin.com/in/edwin-hernandez-209a31196/'},
+  {id:'gocklin', name:'Marcela Gocklin', role:'Dock Area Manager', type:'area', p:'seyelle', li:'https://www.linkedin.com/in/marcela-gocklin-8a46166/'},
+
+  {id:'veja', name:'Vejayendhar Udhayakumar', role:'Pathways Operations Manager', type:'ops', p:'mucaj', li:'https://www.linkedin.com/in/vejayendhar-udhayakumar/'},
+  {id:'sucuzhanay', name:'Carmen Sucuzhanay', role:'Process Assistant', type:'pa', p:'veja'},
+  {id:'fleal', name:'Frank Leal', role:'Process Assistant', type:'pa', p:'veja'},
+
+  // frontline reports under Area Managers
+  {id:'arevalo', name:'Deidy Arevalo', role:'Process Assistant', type:'pa', p:'maldonado'},
+
+  {id:'kuebler', name:'Alexa Kuebler', role:'Process Assistant', type:'pa', p:'gandhi'},
+  {id:'msico', name:'Michael Sico', role:'Ship Clerk', type:'clerk', p:'gandhi'},
+  {id:'sappleton', name:'Sherone Sappleton', role:'Fulfillment Associate', type:'assoc', p:'gandhi'},
+
+  {id:'amarsh', name:'Ajee Marsh', role:'Process Assistant', type:'pa', p:'san'},
+  {id:'bengel', name:'Bernadine Engel', role:'Process Assistant', type:'pa', p:'san'},
+
+  {id:'ctorres', name:'Carlos Torres', role:'Process Assistant', type:'pa', p:'adesina'},
+  {id:'colacino', name:'Franco Colacino', role:'Process Assistant', type:'pa', p:'adesina'},
+  {id:'sliwka', name:'Micheal Sliwka', role:'Process Assistant', type:'pa', p:'adesina'},
+
+  {id:'aherres', name:'Alyssa Herres', role:'Process Assistant', type:'pa', p:'joycollins'},
+  {id:'jseyler', name:'James Seyler', role:'Process Assistant', type:'pa', p:'joycollins'},
+  {id:'konst', name:'Loren Konstantinidis', role:'Ship Clerk', type:'clerk', p:'joycollins'},
+
+  {id:'bpatel', name:'Bhavna Patel', role:'Process Assistant', type:'pa', p:'tapia'},
+  {id:'arnone', name:'Kristin Arnone', role:'Process Assistant', type:'pa', p:'tapia'},
+
+  {id:'azsmith', name:"Azhanee' Smith", role:'Process Assistant', type:'pa', p:'lukose'},
+  {id:'tutuk', name:'Muslum Tutuk', role:'Process Assistant', type:'pa', p:'lukose'},
+
+  {id:'morrison', name:'Douglas Morrison', role:'Process Assistant', type:'pa', p:'ojeda'},
+
+  {id:'dougherty', name:'Michele Dougherty', role:'Process Assistant', type:'pa', p:'tadros'},
+  {id:'undercuffler', name:'Robin Undercuffler', role:'Process Assistant', type:'pa', p:'tadros'},
+
+  {id:'binder', name:'Andreas Binder', role:'Process Assistant', type:'pa', p:'ehernandez'},
+
+  {id:'bohra', name:'Ayaan Bohra', role:'Area Manager Intern', type:'intern', p:'gocklin'},
+  {id:'dpatel', name:'Dhara Patel', role:'Ship Clerk', type:'clerk', p:'gocklin'},
+  {id:'odasz', name:'Tyler Odasz', role:'Ship Clerk', type:'clerk', p:'gocklin'},
+
+  // Carmen Anthony branch
+  {id:'bwatson', name:'Brenda Watson', role:'Ship Clerk', type:'clerk', p:'tashaun'},
+  {id:'signorino', name:'Tammy Signorino', role:'Ship Clerk', type:'clerk', p:'tashaun'},
+
+  // Gary Wysocki branch
+  {id:'kwartin', name:'David Kwartin', role:'Process Assistant', type:'pa', p:'cwood'},
+  {id:'beyclark', name:'Bey-Shana Clark', role:'Process Assistant', type:'pa', p:'bagsic'},
+  {id:'knanni', name:'Kristin Nanni', role:'Process Assistant', type:'pa', p:'bagsic'},
+  {id:'fauntleroy', name:'Elizabeth Fauntleroy-Vereen', role:'Process Assistant', type:'pa', p:'kwright'},
+  {id:'sebmartinez', name:'Sebastian Martinez', role:'Process Assistant', type:'pa', p:'kwright'},
+  {id:'kushwaha', name:'Rekha Kushwaha', role:'Process Assistant', type:'pa', p:'gyasi'},
+  {id:'jpena', name:'Joseph Pena', role:'Process Assistant', type:'pa', p:'khymiak'},
+  {id:'sprice', name:'Steven Price', role:'Process Assistant', type:'pa', p:'khymiak'},
+
+  // Jeffrey Orleski branch
+  {id:'lgurden', name:'Lucas Gurden', role:'Process Assistant', type:'pa', p:'jigar'},
+  {id:'attallah', name:'Martin Attallah', role:'Process Assistant', type:'pa', p:'jigar'},
+  {id:'bsubedi', name:'Basu Subedi', role:'Process Assistant', type:'pa', p:'villaverde'},
+  {id:'korsinah', name:'George Korsinah', role:'Process Assistant', type:'pa', p:'villaverde'},
+
+  // Steven Kozlowski branch
+  {id:'efrancois', name:'Evens Francois', role:'Process Assistant', type:'pa', p:'krupa'},
+  {id:'mnolan', name:'Moe Nolan', role:'Process Assistant', type:'pa', p:'krupa'},
+  {id:'dwadhwa', name:'Deepa Wadhwa', role:'Ship Clerk', type:'clerk', p:'jackman'},
+];
+
+const COLORS = {director:'#ff5e8a',site:'#ffc94d',srops:'#e8edf5',ops:'#9fb3c8',area:'#ff4d4d',intern:'#ff9d9d',pa:'#ff9b3d',clerk:'#ff9b3d',assoc:'#ff9b3d',learn:'#4fd17a',me:'#fff14d'};
+const RADIUS = {director:16,site:14,srops:12,ops:10,area:6,intern:5,pa:4.5,clerk:4.5,assoc:4.5,learn:5,me:11};
+
+// category groups for the filter chips (several node types collapse into one chip)
+const GROUPS = [
+  {key:'lead',  label:'Leadership', color:'#ffc94d', types:['director','site','srops']},
+  {key:'ops',   label:'Ops Mgr',    color:'#9fb3c8', types:['ops']},
+  {key:'area',  label:'Area Mgr',   color:'#ff4d4d', types:['area','intern']},
+  {key:'pa',    label:'PA / Clerk', color:'#ff9b3d', types:['pa','clerk','assoc']},
+  {key:'learn', label:'Learning',   color:'#4fd17a', types:['learn']},
+  {key:'me',    label:'You',        color:'#fff14d', types:['me']},
+];
+const typeToGroup = {};
+GROUPS.forEach(g=>g.types.forEach(t=>typeToGroup[t]=g.key));
+const visibleGroups = new Set(GROUPS.map(g=>g.key)); // all on by default
+function nodeVisible(n){ return visibleGroups.has(typeToGroup[n.type]); }
+
+const byId = {};
+NODES.forEach(n => byId[n.id] = n);
+NODES.forEach(n => { n.children=[]; });
+NODES.forEach(n => { if (n.p && byId[n.p]) byId[n.p].children.push(n); });
+NODES.forEach(n => { n.color=COLORS[n.type]; n.r=RADIUS[n.type]; n.pulse=0; });
+const EDGES = NODES.filter(n=>n.p&&byId[n.p]).map(n=>({a:byId[n.p],b:n,flow:Math.random()}));
+const root = byId['joerger'];
+
+const cv=document.getElementById('c'), ctx=cv.getContext('2d');
+const tip=document.getElementById('tip');
+const treeWrap=document.getElementById('treeWrap');
+let W,H,DPR, mode='neural';
+
+function resize(){
+  DPR=Math.min(window.devicePixelRatio||1,2);
+  W=window.innerWidth;H=window.innerHeight;
+  cv.width=W*DPR;cv.height=H*DPR;cv.style.width=W+'px';cv.style.height=H+'px';
+  ctx.setTransform(DPR,0,0,DPR,0,0);
+  if(mode==='radial') layoutRadial();
+}
+window.addEventListener('resize',resize);
+
+NODES.forEach(n=>{ n.x=W/2+(Math.random()-0.5)*200; n.y=H/2+(Math.random()-0.5)*200; n.vx=0; n.vy=0; });
+
+/* ---------- shared link + tooltip helpers ---------- */
+function linkedinURL(n){ return n.li || ('https://www.google.com/search?q='+encodeURIComponent(n.name+' Amazon')); }
+function showTip(n,x,y){
+  tip.style.opacity=1;
+  tip.style.left=Math.min(x+14,W-260)+'px';
+  tip.style.top=(y+14)+'px';
+  const kids=n.children.filter(nodeVisible).length;
+  tip.innerHTML=`<div class="nm">${n.name}</div><div class="rl">${n.role}</div>`+
+    (kids?`<div class="rp">${kids} direct report${kids>1?'s':''}</div>`:'')+
+    `<div class="li">${n.li?'✓ click for LinkedIn':'↗ click to search Google'}</div>`;
+}
+function hideTip(){ tip.style.opacity=0; }
+
+/* ============================================================= NEURAL */
+let view={x:0,y:0,k:1}, dragNode=null, panning=false, last={x:0,y:0};
+function step(){
+  const vis=NODES.filter(nodeVisible);
+  for(let i=0;i<vis.length;i++){const a=vis[i];
+    for(let j=i+1;j<vis.length;j++){const b=vis[j];
+      let dx=a.x-b.x,dy=a.y-b.y,d2=dx*dx+dy*dy||0.01,d=Math.sqrt(d2);
+      const rep=3200/d2,fx=(dx/d)*rep,fy=(dy/d)*rep;
+      a.vx+=fx;a.vy+=fy;b.vx-=fx;b.vy-=fy;}}
+  EDGES.forEach(e=>{ if(!nodeVisible(e.a)||!nodeVisible(e.b))return;
+    let dx=e.b.x-e.a.x,dy=e.b.y-e.a.y,d=Math.sqrt(dx*dx+dy*dy)||0.01;
+    const t=66+e.a.r+e.b.r,f=(d-t)*0.012,fx=(dx/d)*f,fy=(dy/d)*f;
+    e.a.vx+=fx;e.a.vy+=fy;e.b.vx-=fx;e.b.vy-=fy;});
+  vis.forEach(n=>{
+    n.vx+=(W/2-n.x)*0.0008;n.vy+=(H/2-n.y)*0.0008;
+    if(n!==dragNode){n.vx*=0.86;n.vy*=0.86;n.x+=n.vx;n.y+=n.vy;}
+    if(!Number.isFinite(n.x)||!Number.isFinite(n.y)){n.x=W/2+(Math.random()-0.5)*100;n.y=H/2+(Math.random()-0.5)*100;n.vx=0;n.vy=0;}
+    if(n.pulse>0)n.pulse-=0.02;});
+}
+let t=0;
+function drawNeural(){
+  step();t+=0.016;ctx.clearRect(0,0,W,H);
+  ctx.save();ctx.translate(view.x,view.y);ctx.scale(view.k,view.k);
+  EDGES.forEach(e=>{ if(!nodeVisible(e.a)||!nodeVisible(e.b))return;
+    const a=e.a,b=e.b;
+    if(!Number.isFinite(a.x)||!Number.isFinite(b.x)||!Number.isFinite(a.y)||!Number.isFinite(b.y))return;
+    ctx.strokeStyle='rgba(90,170,240,0.14)';ctx.lineWidth=1/view.k;
+    ctx.beginPath();ctx.moveTo(a.x,a.y);ctx.lineTo(b.x,b.y);ctx.stroke();
+    e.flow+=0.004+(a.pulse>0?0.02:0);if(e.flow>1)e.flow-=1;
+    const px=a.x+(b.x-a.x)*e.flow,py=a.y+(b.y-a.y)*e.flow,glow=a.pulse>0?2.6:1.4;
+    ctx.fillStyle=a.pulse>0?'rgba(255,241,77,0.9)':'rgba(120,200,255,0.5)';
+    ctx.beginPath();ctx.arc(px,py,glow,0,7);ctx.fill();});
+  NODES.forEach(n=>{ if(!nodeVisible(n))return;
+    if(!Number.isFinite(n.x)||!Number.isFinite(n.y))return;
+    const breathe=1+Math.sin(t*1.6+n.x*0.01)*0.06+n.pulse*0.5,r=n.r*breathe;
+    const g=ctx.createRadialGradient(n.x,n.y,0,n.x,n.y,r*3.2);
+    g.addColorStop(0,n.color+'55');g.addColorStop(1,n.color+'00');
+    ctx.fillStyle=g;ctx.beginPath();ctx.arc(n.x,n.y,r*3.2,0,7);ctx.fill();
+    ctx.fillStyle=n.color;ctx.beginPath();ctx.arc(n.x,n.y,r,0,7);ctx.fill();
+    if(['director','site','srops','me'].includes(n.type)){
+      ctx.strokeStyle='rgba(255,255,255,0.7)';ctx.lineWidth=1.5/view.k;
+      ctx.beginPath();ctx.arc(n.x,n.y,r+3,0,7);ctx.stroke();}
+    if(n.li){ctx.strokeStyle='rgba(74,158,255,0.9)';ctx.lineWidth=1.5/view.k;
+      ctx.beginPath();ctx.arc(n.x,n.y,r+5,0,7);ctx.stroke();}});
+  ctx.restore();
+}
+
+/* ============================================================= RADIAL */
+// concentric rings by depth; angle spread by subtree leaf count
+function depthOf(n){let d=0,c=n;while(c.p&&byId[c.p]){d++;c=byId[c.p];}return d;}
+let radialPos=new Map();
+function layoutRadial(){
+  radialPos=new Map();
+  const cx=W/2, cy=H/2;
+  const vis=NODES.filter(nodeVisible);
+  if(!vis.length) return;            // nothing visible -> nothing to place
+  // depth measured against the nearest VISIBLE ancestor chain, so hiding a
+  // middle layer still lays the remaining people out cleanly from the center
+  function visDepth(n){let d=0,c=n;while(c.p&&byId[c.p]){if(nodeVisible(byId[c.p]))d++;c=byId[c.p];}return d;}
+  // roots of the visible forest = visible nodes whose visible-parent chain has no visible parent
+  function hasVisibleParent(n){let c=n;while(c.p&&byId[c.p]){if(nodeVisible(byId[c.p]))return true;c=byId[c.p];}return false;}
+  const roots=vis.filter(n=>!hasVisibleParent(n));
+  const maxDepth=Math.max(1,...vis.map(visDepth));
+  const ringGap=Math.min(W,H)/2/(maxDepth+1.4);
+  function visKids(n){
+    // nearest visible descendants (skip hidden layers)
+    let out=[];
+    n.children.forEach(c=>{ if(nodeVisible(c)) out.push(c); else out=out.concat(visKids(c)); });
+    return out;
+  }
+  function leaves(n){const k=visKids(n);if(!k.length)return 1;return k.reduce((s,c)=>s+leaves(c),0);}
+  function place(n,a0,a1){
+    const d=visDepth(n), rad=d*ringGap, mid=(a0+a1)/2;
+    const x=cx+Math.cos(mid)*rad, y=cy+Math.sin(mid)*rad;
+    if(Number.isFinite(x)&&Number.isFinite(y)) radialPos.set(n.id,{x,y,a0,a1,rad,mid});
+    const k=visKids(n); if(!k.length)return;
+    const total=k.reduce((s,c)=>s+leaves(c),0)||1; let a=a0;
+    k.forEach(c=>{const span=(a1-a0)*leaves(c)/total; place(c,a,a+span); a+=span;});
+  }
+  // distribute the full circle across all visible roots by their leaf weight
+  const totalLeaves=roots.reduce((s,r)=>s+leaves(r),0)||1;
+  let a=-Math.PI/2;
+  roots.forEach(r=>{const span=Math.PI*2*leaves(r)/totalLeaves; place(r,a,a+span); a+=span;});
+}
+function drawRadial(){
+  ctx.clearRect(0,0,W,H);
+  ctx.save();ctx.translate(view.x,view.y);ctx.scale(view.k,view.k);
+  EDGES.forEach(e=>{ if(!nodeVisible(e.a)||!nodeVisible(e.b))return;
+    const pa=radialPos.get(e.a.id),pb=radialPos.get(e.b.id);if(!pa||!pb)return;
+    ctx.strokeStyle='rgba(90,170,240,0.16)';ctx.lineWidth=1/view.k;
+    ctx.beginPath();ctx.moveTo(pa.x,pa.y);ctx.lineTo(pb.x,pb.y);ctx.stroke();});
+  NODES.forEach(n=>{ if(!nodeVisible(n))return; const p=radialPos.get(n.id);if(!p)return;
+    if(!Number.isFinite(p.x)||!Number.isFinite(p.y))return;
+    const r=n.r;
+    const g=ctx.createRadialGradient(p.x,p.y,0,p.x,p.y,r*3);
+    g.addColorStop(0,n.color+'55');g.addColorStop(1,n.color+'00');
+    ctx.fillStyle=g;ctx.beginPath();ctx.arc(p.x,p.y,r*3,0,7);ctx.fill();
+    ctx.fillStyle=n.color;ctx.beginPath();ctx.arc(p.x,p.y,r,0,7);ctx.fill();
+    if(n.li){ctx.strokeStyle='rgba(74,158,255,0.9)';ctx.lineWidth=1.5/view.k;
+      ctx.beginPath();ctx.arc(p.x,p.y,r+5,0,7);ctx.stroke();}});
+  ctx.restore();
+}
+
+/* ============================================================= TREE */
+const collapsed=new Set();
+function buildTree(){
+  treeWrap.innerHTML='';
+  if(nodeVisible(root)) treeWrap.appendChild(treeNode(root));
+}
+function treeNode(n){
+  const wrap=document.createElement('div');
+  const row=document.createElement('div');
+  row.className='tnode'+(n.li?' linked':'');
+  const kids=n.children.filter(nodeVisible);
+  const caret=document.createElement('span');caret.className='tcaret';
+  caret.textContent=kids.length?(collapsed.has(n.id)?'▸':'▾'):'';
+  const dot=document.createElement('span');dot.className='tdot';dot.style.color=n.color;dot.style.background=n.color;
+  const name=document.createElement('span');name.className='tname';name.textContent=n.name;
+  const role=document.createElement('span');role.className='trole';role.textContent=n.role;
+  row.appendChild(caret);row.appendChild(dot);row.appendChild(name);row.appendChild(role);
+  if(kids.length){const c=document.createElement('span');c.className='tcount';c.textContent='('+kids.length+')';row.appendChild(c);}
+  wrap.appendChild(row);
+  const childBox=document.createElement('div');
+  childBox.className='tchildren'+(collapsed.has(n.id)?' collapsed':'');
+  kids.forEach(k=>childBox.appendChild(treeNode(k)));
+  wrap.appendChild(childBox);
+  // interactions
+  caret.onclick=e=>{e.stopPropagation(); if(collapsed.has(n.id))collapsed.delete(n.id);else collapsed.add(n.id); buildTree();};
+  row.onclick=()=>window.open(linkedinURL(n),'_blank','noopener');
+  row.onmouseenter=e=>showTip(n,e.clientX,e.clientY);
+  row.onmousemove=e=>showTip(n,e.clientX,e.clientY);
+  row.onmouseleave=hideTip;
+  return wrap;
+}
+
+/* ============================================================= LOOP + MODE */
+function frame(){ if(mode==='neural')drawNeural(); else if(mode==='radial')drawRadial(); requestAnimationFrame(frame); }
+frame();
+
+const modeLabel=document.getElementById('modeLabel');
+function setMode(m){
+  mode=m;
+  cv.classList.toggle('active', m!=='tree');
+  treeWrap.classList.toggle('active', m==='tree');
+  document.querySelectorAll('#bar button').forEach(b=>b.classList.toggle('on',b.dataset.mode===m));
+  modeLabel.textContent = m==='neural'?'org neural map':m==='tree'?'collapsible tree':'radial sunburst';
+  document.getElementById('hint').style.display = m==='tree' ? 'none':'block';
+  view={x:0,y:0,k:1};
+  if(m==='radial'){layoutRadial();}
+  if(m==='tree'){buildTree();}
+}
+document.querySelectorAll('#bar button').forEach(b=>b.onclick=()=>setMode(b.dataset.mode));
+
+/* ---------- filter chips ---------- */
+const filters=document.getElementById('filters');
+GROUPS.forEach(g=>{
+  const c=document.createElement('span');c.className='chip';c.dataset.key=g.key;
+  c.innerHTML=`<i class="dot" style="color:${g.color};background:${g.color}"></i>${g.label}`;
+  c.onclick=()=>{
+    if(visibleGroups.has(g.key)){visibleGroups.delete(g.key);c.classList.add('off');}
+    else{visibleGroups.add(g.key);c.classList.remove('off');}
+    if(mode==='tree')buildTree(); if(mode==='radial')layoutRadial();
+  };
+  filters.appendChild(c);
+});
+
+/* ---------- canvas interaction (neural + radial share pick) ---------- */
+function toWorld(mx,my){return {x:(mx-view.x)/view.k,y:(my-view.y)/view.k};}
+function pick(mx,my){
+  const w=toWorld(mx,my);let best=null,bd=1e9;
+  NODES.forEach(n=>{ if(!nodeVisible(n))return;
+    let px,py;
+    if(mode==='radial'){const p=radialPos.get(n.id);if(!p)return;px=p.x;py=p.y;}
+    else {px=n.x;py=n.y;}
+    const dx=px-w.x,dy=py-w.y,d=Math.hypot(dx,dy);
+    if(d<n.r+8&&d<bd){bd=d;best=n;}});
+  return best;
+}
+cv.addEventListener('pointerdown',e=>{
+  const n=pick(e.clientX,e.clientY);
+  if(n&&mode==='neural'){dragNode=n;n.pulse=1;cv.setPointerCapture(e.pointerId);}
+  else{panning=true;}
+  last={x:e.clientX,y:e.clientY};
+});
+cv.addEventListener('pointermove',e=>{
+  if(dragNode&&mode==='neural'){const w=toWorld(e.clientX,e.clientY);dragNode.x=w.x;dragNode.y=w.y;dragNode.vx=0;dragNode.vy=0;}
+  else if(panning){view.x+=e.clientX-last.x;view.y+=e.clientY-last.y;last={x:e.clientX,y:e.clientY};}
+  else{const n=pick(e.clientX,e.clientY);
+    if(n){cv.style.cursor='pointer';showTip(n,e.clientX,e.clientY);}
+    else{cv.style.cursor='grab';hideTip();}}
+});
+window.addEventListener('pointerup',()=>{dragNode=null;panning=false;});
+cv.addEventListener('wheel',e=>{
+  e.preventDefault();const f=e.deltaY<0?1.1:0.9,mx=e.clientX,my=e.clientY;
+  const wx=(mx-view.x)/view.k,wy=(my-view.y)/view.k;
+  view.k=Math.max(0.3,Math.min(3,view.k*f));view.x=mx-wx*view.k;view.y=my-wy*view.k;
+},{passive:false});
+cv.addEventListener('click',e=>{
+  if(panning&&(Math.abs(e.movementX)>2))return;
+  const n=pick(e.clientX,e.clientY);if(!n)return;
+  n.pulse=1;window.open(linkedinURL(n),'_blank','noopener');
+});
+cv.addEventListener('dblclick',e=>{
+  const n=pick(e.clientX,e.clientY);if(!n)return;
+  const q=[n];while(q.length){const c=q.shift();c.pulse=1;c.children.forEach(k=>q.push(k));}
+});
+
+resize();
+</script>
+</body>
+</html>
